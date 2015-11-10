@@ -343,9 +343,9 @@ static int pl031_driver_probe(struct vmm_device *dev,
 	ldata->hw_designer = amba_manf(dev);
 	ldata->hw_revision = amba_rev(dev);
 
-	rc = vmm_devtree_irq_get(dev->node, &ldata->irq, 0);
-	if (rc) {
-		rc = VMM_EFAIL;
+	ldata->irq = vmm_devtree_irq_parse_map(dev->node, 0);
+	if (!ldata->irq) {
+		rc = VMM_ENODEV;
 		goto free_reg;
 	}
 	if ((rc = vmm_host_irq_register(ldata->irq, dev->name,
@@ -424,7 +424,7 @@ static int pl031_driver_remove(struct vmm_device *dev)
 }
 
 static struct vmm_devtree_nodeid pl031_devid_table[] = {
-	{.type = "rtc",.compatible = "arm,pl031"},
+	{ .compatible = "arm,pl031" },
 	{ /* end of list */ },
 };
 

@@ -40,9 +40,10 @@ struct rbd {
 };
 
 /** Create RBD instance */
-struct rbd *rbd_create(const char *name, 
-			physical_addr_t pa, 
-			physical_size_t sz);
+struct rbd *rbd_create(const char *name,
+			physical_addr_t pa,
+			physical_size_t sz,
+			bool ignore_overlap);
 
 /** Destroy RBD instance */
 void rbd_destroy(struct rbd *d);

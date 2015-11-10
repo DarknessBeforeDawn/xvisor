@@ -42,10 +42,7 @@ static void cmd_module_usage(struct vmm_chardev *cdev)
 	vmm_cprintf(cdev, "   module help\n");
 	vmm_cprintf(cdev, "   module list\n");
 	vmm_cprintf(cdev, "   module info <index>\n");
-#ifdef CONFIG_MODULES
-	vmm_cprintf(cdev, "   module load <phys_addr> <phys_size> (EXPERIMENTAL)\n");
 	vmm_cprintf(cdev, "   module unload <index>\n");
-#endif
 }
 
 static void cmd_module_list(struct vmm_chardev *cdev)
@@ -54,16 +51,16 @@ static void cmd_module_list(struct vmm_chardev *cdev)
 	struct vmm_module *mod;
 	vmm_cprintf(cdev, "----------------------------------------"
 			  "----------------------------------------\n");
-	vmm_cprintf(cdev, " %-5s %-25s %-25s %-10s %-11s\n", 
+	vmm_cprintf(cdev, " %-5s %-25s %-25s %-10s %-11s\n",
 			  "Num", "Name", "Author", "License", "Type");
 	vmm_cprintf(cdev, "----------------------------------------"
 			  "----------------------------------------\n");
 	count = vmm_modules_count();
 	for (num = 0; num < count; num++) {
 		mod = vmm_modules_getmodule(num);
-		vmm_cprintf(cdev, " %-5d %-25s %-25s %-10s %-11s\n", 
+		vmm_cprintf(cdev, " %-5d %-25s %-25s %-10s %-11s\n",
 				  num, mod->name, mod->author, mod->license,
-				  vmm_modules_isbuiltin(mod) ? 
+				  vmm_modules_isbuiltin(mod) ?
 				  "built-in" : "loadable");
 	}
 	vmm_cprintf(cdev, "----------------------------------------"
@@ -85,36 +82,8 @@ static int cmd_module_info(struct vmm_chardev *cdev, u32 index)
 	vmm_cprintf(cdev, "Author:      %s\n", mod->author);
 	vmm_cprintf(cdev, "License:     %s\n", mod->license);
 	vmm_cprintf(cdev, "iPriority:   %d\n", mod->ipriority);
-	vmm_cprintf(cdev, "Type:        %s\n", vmm_modules_isbuiltin(mod) ? 
+	vmm_cprintf(cdev, "Type:        %s\n", vmm_modules_isbuiltin(mod) ?
 					 "built-in" : "loadable");
-
-	return VMM_OK;
-}
-
-#ifdef CONFIG_MODULES
-
-static int cmd_module_load(struct vmm_chardev *cdev, 
-			   physical_addr_t phys_addr,
-			   physical_size_t phys_size)
-{
-	int rc;
-	virtual_addr_t mod_va;
-	virtual_size_t mod_sz = phys_size;
-
-	mod_va = vmm_host_iomap(phys_addr, mod_sz);
-
-	if ((rc = vmm_modules_load(mod_va, mod_sz))) {
-		vmm_host_iounmap(mod_va);
-		return rc;
-	} else {
-		vmm_cprintf(cdev, "Loaded module succesfully\n");
-	}
-
-	rc = vmm_host_iounmap(mod_va);
-	if (rc) {
-		vmm_cprintf(cdev, "Error: Failed to unmap memory.\n");
-		return rc;
-	}
 
 	return VMM_OK;
 }
@@ -143,15 +112,10 @@ static int cmd_module_unload(struct vmm_chardev *cdev, u32 index)
 	return rc;
 }
 
-#endif
-
 static int cmd_module_exec(struct vmm_chardev *cdev, int argc, char **argv)
 {
 	int index;
-#ifdef CONFIG_MODULES
-	physical_addr_t addr;
-	physical_size_t size;
-#endif
+
 	if (argc == 2) {
 		if (strcmp(argv[1], "help") == 0) {
 			cmd_module_usage(cdev);
@@ -168,15 +132,9 @@ static int cmd_module_exec(struct vmm_chardev *cdev, int argc, char **argv)
 	if (strcmp(argv[1], "info") == 0) {
 		index = atoi(argv[2]);
 		return cmd_module_info(cdev, index);
-#ifdef CONFIG_MODULES
-	} else if (strcmp(argv[1], "load") == 0 && argc == 4) {
-		addr = (physical_addr_t)strtoull(argv[2], NULL, 0);
-		size = (physical_size_t)strtoull(argv[3], NULL, 0);
-		return cmd_module_load(cdev, addr, size);
 	} else if (strcmp(argv[1], "unload") == 0) {
 		index = atoi(argv[2]);
 		return cmd_module_unload(cdev, index);
-#endif
 	} else {
 		cmd_module_usage(cdev);
 		return VMM_EFAIL;
@@ -201,9 +159,9 @@ static void __exit cmd_module_exit(void)
 	vmm_cmdmgr_unregister_cmd(&cmd_module);
 }
 
-VMM_DECLARE_MODULE(MODULE_DESC, 
-			MODULE_AUTHOR, 
-			MODULE_LICENSE, 
-			MODULE_IPRIORITY, 
-			MODULE_INIT, 
+VMM_DECLARE_MODULE(MODULE_DESC,
+			MODULE_AUTHOR,
+			MODULE_LICENSE,
+			MODULE_IPRIORITY,
+			MODULE_INIT,
 			MODULE_EXIT);

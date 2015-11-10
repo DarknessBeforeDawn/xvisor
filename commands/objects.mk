@@ -22,6 +22,8 @@
 # */
 
 commands-objs-$(CONFIG_CMD_VERSION)+= cmd_version.o
+commands-objs-$(CONFIG_CMD_SLEEP)+= cmd_sleep.o
+commands-objs-$(CONFIG_CMD_ECHO)+= cmd_echo.o
 commands-objs-$(CONFIG_CMD_RESET)+= cmd_reset.o
 commands-objs-$(CONFIG_CMD_SHUTDOWN)+= cmd_shutdown.o
 commands-objs-$(CONFIG_CMD_HOST)+= cmd_host.o
@@ -55,6 +57,7 @@ commands-objs-$(CONFIG_CMD_I2C)+= cmd_i2c.o
 commands-objs-$(CONFIG_CMD_NET)+= cmd_net.o
 commands-objs-$(CONFIG_CMD_IPCONFIG)+= cmd_ipconfig.o
 commands-objs-$(CONFIG_CMD_PING)+= cmd_ping.o
+commands-objs-$(CONFIG_CMD_MII)+= cmd_mii.o
 
 commands-objs-$(CONFIG_CMD_VSTELNET)+= cmd_vstelnet.o
 commands-objs-$(CONFIG_CMD_VFS)+= cmd_vfs.o

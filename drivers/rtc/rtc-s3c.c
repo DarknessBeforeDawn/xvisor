@@ -495,15 +495,15 @@ static int s3c_rtc_driver_probe(struct vmm_device *pdev,
 
 	/* find the IRQs */
 
-	rc = vmm_devtree_irq_get(pdev->node, &alarmno, 0);
-	if (rc) {
-		rc = VMM_EFAIL;
+	alarmno = vmm_devtree_irq_parse_map(pdev->node, 0);
+	if (!alarmno) {
+		rc = VMM_ENODEV;
 		return rc;
 	}
 	s3c_rtc_alarmno = alarmno;
-	rc = vmm_devtree_irq_get(pdev->node, &tickno, 1);
-	if (rc) {
-		rc = VMM_EFAIL;
+	tickno = vmm_devtree_irq_parse_map(pdev->node, 1);
+	if (!tickno) {
+		rc = VMM_ENODEV;
 		return rc;
 	}
 	s3c_rtc_tickno = tickno;
@@ -621,22 +621,10 @@ static int s3c_rtc_driver_probe(struct vmm_device *pdev,
 }
 
 static struct vmm_devtree_nodeid s3c_devid_table[] = {
-	{
-	 .type = "rtc",
-	 .compatible = "samsung,s3c2410-rtc",
-	 .data = (void *)TYPE_S3C2410},
-	{
-	 .type = "rtc",
-	 .compatible = "samsung,s3c2416-rtc",
-	 .data = (void *)TYPE_S3C2416},
-	{
-	 .type = "rtc",
-	 .compatible = "samsung,s3c2443-rtc",
-	 .data = (void *)TYPE_S3C2443},
-	{
-	 .type = "rtc",
-	 .compatible = "samsung,s3c6410-rtc",
-	 .data = (void *)TYPE_S3C64XX},
+	{ .compatible = "samsung,s3c2410-rtc", .data = (void *)TYPE_S3C2410 },
+	{ .compatible = "samsung,s3c2416-rtc", .data = (void *)TYPE_S3C2416 },
+	{ .compatible = "samsung,s3c2443-rtc", .data = (void *)TYPE_S3C2443 },
+	{ .compatible = "samsung,s3c6410-rtc", .data = (void *)TYPE_S3C64XX },
 	{ /* end of list */ },
 };
 

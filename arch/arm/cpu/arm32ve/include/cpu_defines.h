@@ -266,6 +266,10 @@
 #define HCR_SWIO_SHIFT					1
 #define HCR_VM_MASK					0x00000001
 #define HCR_VM_SHIFT					0
+#define HCR_DEFAULT_BITS				(HCR_AMO_MASK | \
+							 HCR_IMO_MASK | \
+							 HCR_FMO_MASK | \
+							 HCR_VM_MASK)
 
 /* HCPTR */
 #define HCPTR_INITVAL					0x00000000
@@ -402,6 +406,12 @@
 #define ISS_MCR_MRC_CRM_SHIFT				1
 #define ISS_MCR_MRC_DIR_MASK				0x00000001
 #define ISS_MCR_MRC_DIR_SHIFT				0
+
+/* MCR/MRC CP0 to CP13 ISS Encodings */
+#define ISS_CP0_TO_CP13_ASIMD_MASK			0x00000020
+#define ISS_CP0_TO_CP13_ASIMD_SHIFT			5
+#define ISS_CP0_TO_CP13_COPROC_MASK			0x0000000F
+#define ISS_CP0_TO_CP13_COPROC_SHIFT			0
 
 /* Instruction/Data Abort ISS Encodings */
 #define ISS_ABORT_ISV_MASK				0x01000000

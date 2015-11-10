@@ -42,6 +42,12 @@ virtual_size_t vmm_alloc_size(const void *ptr);
 /** Free Normal memory */
 void vmm_free(void *ptr);
 
+/* Translate a normal address to its virtual address */
+void *vmm_normal_pa2va(physical_addr_t pa);
+
+/* Translate a normal virtual address to its physical address */
+void *vmm_normal_va2pa(virtual_addr_t va);
+
 /** Starting virtual address of Normal heap */
 virtual_addr_t vmm_normal_heap_start_va(void);
 
@@ -57,11 +63,47 @@ virtual_size_t vmm_normal_heap_free_size(void);
 /** Print Normal heap state */
 int vmm_normal_heap_print_state(struct vmm_chardev *cdev);
 
+/** Possible DMA directions */
+enum vmm_dma_direction {
+	DMA_BIDIRECTIONAL = 0,
+	DMA_TO_DEVICE = 1,
+	DMA_FROM_DEVICE = 2,
+	DMA_NONE = 3,
+};
+
 /** Allocate DMA memory */
 void *vmm_dma_malloc(virtual_size_t size);
 
 /** Allocate DMA memory and zero set */
 void *vmm_dma_zalloc(virtual_size_t size);
+
+/** Allocate DMA memory and get its physical address */
+void *vmm_dma_zalloc_phy(virtual_size_t size, physical_addr_t *paddr);
+
+/* Translate a DMA physical address to its virtual address */
+virtual_addr_t vmm_dma_pa2va(physical_addr_t pa);
+
+/* Translate a DMA virtual address to its physical address */
+physical_addr_t vmm_dma_va2pa(virtual_addr_t va);
+
+/** Check if an address is allocated on the DMA heap */
+int vmm_is_dma(void *va);
+
+/* Sync the buffer to be "owned" by the device */
+void vmm_dma_sync_for_device(virtual_addr_t start, virtual_addr_t end,
+			     enum vmm_dma_direction dir);
+
+/* Sync the buffer to be "owned" by the CPU */
+void vmm_dma_sync_for_cpu(virtual_addr_t start, virtual_addr_t end,
+			  enum vmm_dma_direction dir);
+
+/* Map a DMA buffer for the device */
+physical_addr_t vmm_dma_map(virtual_addr_t vaddr, virtual_size_t size,
+			    enum vmm_dma_direction dir);
+
+/* Unmap the DMA buffer, which can be then read by the CPU */
+void vmm_dma_unmap(physical_addr_t daddr, physical_size_t size,
+		   enum vmm_dma_direction dir);
 
 /** Retrieve allocation size from DMA heap */
 virtual_size_t vmm_dma_alloc_size(const void *ptr);

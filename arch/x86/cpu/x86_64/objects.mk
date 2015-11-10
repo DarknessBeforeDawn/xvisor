@@ -37,6 +37,7 @@ cpu-objs-y+= cpu_atomic64.o
 #endif
 cpu-objs-y+= cpu_main.o
 cpu-objs-y+= cpu_hacks.o
+cpu-objs-y+= cpu_string.o
 cpu-objs-$(CONFIG_MODULES)+= cpu_elf.o
 cpu-objs-y+= cpu_interrupts.o
 cpu-objs-y+= cpu_vcpu_irq.o
@@ -51,3 +52,4 @@ cpu-objs-$(CONFIG_VEXT_AMD_SVM)+= vm/amd/amd_svm.o
 cpu-objs-$(CONFIG_VEXT_INTEL_VTX)+= vm/intel/intel_vmcs.o
 cpu-objs-$(CONFIG_VEXT_INTEL_VTX)+= vm/intel/intel_vmx.o
 cpu-objs-$(CONFIG_VEXT_INTEL_VTX)+= vm/intel/ivmx_helper.o
+cpu-objs-$(CONFIG_VEXT_INTEL_VTX)+= vm/intel/intel_intercept.o

@@ -47,11 +47,13 @@
 
 #include <exynos/irqs.h>
 #include <exynos/plat/cpu.h>
-#include <exynos/mct_timer.h>
+#include <exynos/regs-mct.h>
 
 #define HZ		(1000 / CONFIG_TSLICE_MS)
 
 static void *exynos4_sys_timer;
+
+static int __cpuinit exynos4_local_timer_init(struct vmm_devtree_node *node);
 
 static inline u32 exynos4_mct_read(u32 offset)
 {
@@ -147,34 +149,53 @@ static u64 exynos4_frc_read(struct vmm_clocksource *cs)
 
 static struct vmm_clocksource mct_frc;
 
-int __init exynos4_clocksource_init(virtual_addr_t base,
-				    const char *name,
-				    int rating, u32 freq_hz)
+static int __init exynos4_clocksource_init(struct vmm_devtree_node *node)
 {
-	u32 reg;
+	int rc;
+	u32 clock;
 
-	exynos4_sys_timer = (void *)base;
+	/* Read clock frequency from node */
+	rc = vmm_devtree_clock_frequency(node, &clock);
+	if (rc) {
+		goto fail;
+	}
+
+	if (!exynos4_sys_timer) {
+		/* Map timer registers */
+		rc = vmm_devtree_regmap(node,
+					(virtual_addr_t *) & exynos4_sys_timer,
+					0);
+		if (rc) {
+			goto regmap_fail;
+		}
+	}
 
 	/* Fill the clocksource structure */
-	mct_frc.name = name;
-	mct_frc.rating = rating;
+	mct_frc.name = node->name;
+	mct_frc.rating = 300;
 	mct_frc.read = exynos4_frc_read;
 	mct_frc.mask = VMM_CLOCKSOURCE_MASK(64);
-	vmm_clocks_calc_mult_shift(&mct_frc.mult, 
-				   &mct_frc.shift, 
-				   freq_hz, NSEC_PER_SEC, 5);
+	vmm_clocks_calc_mult_shift(&mct_frc.mult,
+				   &mct_frc.shift, clock, NSEC_PER_SEC, 5);
 	mct_frc.priv = NULL;
 
 	/* Start the clocksource timer */
 	exynos4_mct_write(0, EXYNOS4_MCT_G_CNT_L);
 	exynos4_mct_write(0, EXYNOS4_MCT_G_CNT_U);
-	reg = exynos4_mct_read(EXYNOS4_MCT_G_TCON);
-	reg |= MCT_G_TCON_START;
-	exynos4_mct_write(reg, EXYNOS4_MCT_G_TCON);
+	exynos4_mct_write(exynos4_mct_read(EXYNOS4_MCT_G_TCON) |
+			  MCT_G_TCON_START, EXYNOS4_MCT_G_TCON);
 
 	/* register the clocksource to Xvisor */
 	return vmm_clocksource_register(&mct_frc);
+
+ regmap_fail:
+ fail:
+	return rc;
 }
+
+VMM_CLOCKSOURCE_INIT_DECLARE(exynos4clksrc,
+			     "samsung,exynos4210-mct",
+			     exynos4_clocksource_init);
 
 static void exynos4_mct_comp0_stop(void)
 {
@@ -253,52 +274,88 @@ static vmm_irq_return_t exynos4_mct_comp_isr(int irq_no, void *dev)
 
 static struct vmm_clockchip mct_comp_device;
 
-int __init exynos4_clockchip_init(virtual_addr_t base, u32 hirq,
-				  const char *name, int rating,
-				  u32 freq_hz, u32 target_cpu)
+static int __cpuinit exynos4_clockchip_init(struct vmm_devtree_node *node)
 {
-	int rc;
-
-	exynos4_sys_timer = (void *)base;
-
-	mct_comp_device.name = name;
-	mct_comp_device.hirq = hirq;
-	mct_comp_device.rating = rating;
+	if (vmm_smp_is_bootcpu()) {
+		int rc;
+		u32 irq;
+		u32 clock;
 #ifdef CONFIG_SMP
-	mct_comp_device.cpumask = vmm_cpumask_of(target_cpu);
+		u32 cpu = vmm_smp_processor_id();
+#endif
+
+		rc = vmm_devtree_clock_frequency(node, &clock);
+		if (rc) {
+			return rc;
+		}
+
+		/* Get MCT irq */
+		irq = vmm_devtree_irq_parse_map(node, 0);
+		if (!irq) {
+			return VMM_ENODEV;
+		}
+
+		if (!exynos4_sys_timer) {
+			rc = vmm_devtree_regmap(node,
+						(virtual_addr_t *) &
+						exynos4_sys_timer, 0);
+			if (rc) {
+				return rc;
+			}
+		}
+
+		mct_comp_device.name = node->name;
+		mct_comp_device.hirq = irq;
+		mct_comp_device.rating = 300;
+#ifdef CONFIG_SMP
+		mct_comp_device.cpumask = vmm_cpumask_of(cpu);
 #else
-	mct_comp_device.cpumask = cpu_all_mask;
+		mct_comp_device.cpumask = cpu_all_mask;
 #endif
-	mct_comp_device.features =
-	    VMM_CLOCKCHIP_FEAT_PERIODIC | VMM_CLOCKCHIP_FEAT_ONESHOT;
-	vmm_clocks_calc_mult_shift(&mct_comp_device.mult, 
-				   &mct_comp_device.shift, 
-				   NSEC_PER_SEC, freq_hz, 5);
-	mct_comp_device.min_delta_ns =
-	    vmm_clockchip_delta2ns(0xF, &mct_comp_device);
-	mct_comp_device.max_delta_ns =
-	    vmm_clockchip_delta2ns(0xFFFFFFFF, &mct_comp_device);
-	mct_comp_device.set_mode = exynos4_comp_set_mode;
-	mct_comp_device.set_next_event = exynos4_comp_set_next_event;
-	mct_comp_device.priv = NULL;
+		mct_comp_device.features =
+		    VMM_CLOCKCHIP_FEAT_PERIODIC | VMM_CLOCKCHIP_FEAT_ONESHOT;
+		vmm_clocks_calc_mult_shift(&mct_comp_device.mult,
+					   &mct_comp_device.shift,
+					   NSEC_PER_SEC, clock, 5);
+		mct_comp_device.min_delta_ns =
+		    vmm_clockchip_delta2ns(0xF, &mct_comp_device);
+		mct_comp_device.max_delta_ns =
+		    vmm_clockchip_delta2ns(0xFFFFFFFF, &mct_comp_device);
+		mct_comp_device.set_mode = exynos4_comp_set_mode;
+		mct_comp_device.set_next_event = exynos4_comp_set_next_event;
+		mct_comp_device.priv = NULL;
 
-	/* Register interrupt handler */
-	if ((rc =
-	     vmm_host_irq_register(hirq, name, exynos4_mct_comp_isr,
-				   &mct_comp_device))) {
-		return rc;
-	}
+		/* Register interrupt handler */
+		if ((rc =
+		     vmm_host_irq_register(irq, node->name,
+					   exynos4_mct_comp_isr,
+					   &mct_comp_device))) {
+			return rc;
+		}
 #ifdef CONFIG_SMP
-	/* Set host irq affinity to target cpu */
-	if ((rc =
-	     vmm_host_irq_set_affinity(hirq, vmm_cpumask_of(target_cpu),
-				       TRUE))) {
-		return rc;
-	}
+		/* Set host irq affinity to target cpu */
+		if ((rc =
+		     vmm_host_irq_set_affinity(irq, vmm_cpumask_of(cpu),
+					       TRUE))) {
+			vmm_host_irq_unregister(irq, &mct_comp_device);
+			return rc;
+		}
 #endif
 
-	return vmm_clockchip_register(&mct_comp_device);
+		if ((rc = vmm_clockchip_register(&mct_comp_device))) {
+			return rc;
+		}
+	}
+#ifdef CONFIG_SAMSUNG_MCT_LOCAL_TIMERS
+	return exynos4_local_timer_init(node);
+#else
+	return VMM_OK;
+#endif
+
 }
+
+VMM_CLOCKCHIP_INIT_DECLARE(exynos4clkchip,
+			   "samsung,exynos4210-mct", exynos4_clockchip_init);
 
 #ifdef CONFIG_SAMSUNG_MCT_LOCAL_TIMERS
 
@@ -313,10 +370,6 @@ enum {
 #define MCT_L_BASE_CNT	1
 #define MCT_L_MAX_COUNT	0x7FFFFFFF
 #define MCT_L_MIN_COUNT	0xF
-
-static u32 mct_int_type = MCT_INT_UNKNOWN;
-
-void exynos4_timer_init(void);
 
 struct mct_clock_event_clockchip {
 	char name[32];
@@ -355,9 +408,8 @@ static void exynos4_mct_tick_start(u32 cycles,
 	exynos4_mct_write(0x1, mevt->timer_base + MCT_L_INT_ENB_OFFSET);
 
 	tmp = exynos4_mct_read(mevt->timer_base + MCT_L_TCON_OFFSET);
-	tmp |= MCT_L_TCON_INT_START | 
-		MCT_L_TCON_TIMER_START |
-		MCT_L_TCON_INTERVAL_MODE;
+	tmp |= MCT_L_TCON_INT_START |
+	    MCT_L_TCON_TIMER_START | MCT_L_TCON_INTERVAL_MODE;
 	exynos4_mct_write(tmp, mevt->timer_base + MCT_L_TCON_OFFSET);
 }
 
@@ -408,7 +460,7 @@ static int exynos4_mct_tick_clear(struct mct_clock_event_clockchip *mevt)
 
 	/* Clear the MCT tick interrupt */
 	if (exynos4_mct_read(mevt->timer_base + MCT_L_INT_CSTAT_OFFSET) & 1) {
-		exynos4_mct_write(0x1, 
+		exynos4_mct_write(0x1,
 				  mevt->timer_base + MCT_L_INT_CSTAT_OFFSET);
 		return 1;
 	} else {
@@ -433,19 +485,42 @@ static vmm_irq_return_t exynos4_mct_tick_isr(int irq_no, void *dev_id)
 	return VMM_IRQ_HANDLED;
 }
 
-int __cpuinit exynos4_local_timer_init(virtual_addr_t timer_base, u32 hirq,
-				       const char *name, int rating,
-				       u32 freq_hz)
+static int __cpuinit exynos4_local_timer_init(struct vmm_devtree_node *node)
 {
 	int rc;
 	struct mct_clock_event_clockchip *mevt;
 	struct vmm_clockchip *evt;
 	u32 cpu = vmm_smp_processor_id();
-
-	exynos4_sys_timer = (void *)timer_base;
+	static u32 mct_int_type = MCT_INT_UNKNOWN;
+	u32 clock;
+	u32 irq;
 
 	if (mct_int_type == MCT_INT_UNKNOWN) {
-		exynos4_timer_init();
+		/* Get MCT irq */
+		irq = vmm_devtree_irq_parse_map(node, 1);
+		if (!irq) {
+			return VMM_ENODEV;
+		}
+
+		if (vmm_host_irq_is_per_cpu(vmm_host_irq_get(irq))) {
+			mct_int_type = MCT_INT_PPI;
+		} else {
+			mct_int_type = MCT_INT_SPI;
+		}
+	}
+
+	rc = vmm_devtree_clock_frequency(node, &clock);
+	if (rc) {
+		return rc;
+	}
+
+	if (!exynos4_sys_timer) {
+		rc = vmm_devtree_regmap(node,
+					(virtual_addr_t *) & exynos4_sys_timer,
+					0);
+		if (rc) {
+			return rc;
+		}
 	}
 
 	mevt = &this_cpu(percpu_mct_tick);
@@ -461,52 +536,44 @@ int __cpuinit exynos4_local_timer_init(virtual_addr_t timer_base, u32 hirq,
 	evt->features =
 	    VMM_CLOCKCHIP_FEAT_PERIODIC | VMM_CLOCKCHIP_FEAT_ONESHOT;
 	evt->rating = 450;
-	vmm_clocks_calc_mult_shift(&evt->mult, 
-				   &evt->shift, 
-				   NSEC_PER_SEC, 
-				   freq_hz / (MCT_L_BASE_CNT + 1), 10);
+	vmm_clocks_calc_mult_shift(&evt->mult,
+				   &evt->shift,
+				   NSEC_PER_SEC,
+				   clock / (MCT_L_BASE_CNT + 1), 10);
 	evt->max_delta_ns = vmm_clockchip_delta2ns(MCT_L_MAX_COUNT, evt);
 	evt->min_delta_ns = vmm_clockchip_delta2ns(MCT_L_MIN_COUNT, evt);
 	evt->priv = mevt;
 
-	exynos4_mct_write(MCT_L_BASE_CNT, 
+	exynos4_mct_write(MCT_L_BASE_CNT,
 			  mevt->timer_base + MCT_L_TCNTB_OFFSET);
 
 	if (mct_int_type == MCT_INT_SPI) {
-		if (vmm_smp_is_bootcpu()) {
-			rc = vmm_host_irq_register(EXYNOS4_IRQ_MCT_L0,
-						   mevt->name,
-						   exynos4_mct_tick_isr, mevt);
-			if (rc) {
-				return rc;
-			}
-			rc = vmm_host_irq_set_affinity(EXYNOS4_IRQ_MCT_L0,
-						       vmm_cpumask_of(cpu),
-						       TRUE);
-			if (rc) {
-				vmm_host_irq_unregister(EXYNOS4_IRQ_MCT_L0,
-							mevt);
-				return rc;
-			}
-		} else {
-			rc = vmm_host_irq_register(EXYNOS4_IRQ_MCT_L1,
-						   mevt->name,
-						   exynos4_mct_tick_isr, mevt);
-			if (rc) {
-				return rc;
-			}
-			rc = vmm_host_irq_set_affinity(EXYNOS4_IRQ_MCT_L1,
-						       vmm_cpumask_of(cpu),
-						       TRUE);
-			if (rc) {
-				vmm_host_irq_unregister(EXYNOS4_IRQ_MCT_L1,
-							mevt);
-				return rc;
-			}
+		/* Get MCT irq */
+		irq = vmm_devtree_irq_parse_map(node, 1 + cpu);
+		if (!irq) {
+			return VMM_ENODEV;
 		}
+
+		rc = vmm_host_irq_register(irq, mevt->name,
+					   exynos4_mct_tick_isr, mevt);
+		if (rc) {
+			return rc;
+		}
+
+		rc = vmm_host_irq_set_affinity(irq, vmm_cpumask_of(cpu), TRUE);
+		if (rc) {
+			vmm_host_irq_unregister(irq, mevt);
+			return rc;
+		}
+
 	} else {
-		rc = vmm_host_irq_register(EXYNOS_IRQ_MCT_LOCALTIMER,
-					   "mct_tick_local",
+		/* Get MCT irq */
+		irq = vmm_devtree_irq_parse_map(node, 1);
+		if (!irq) {
+			return VMM_ENODEV;
+		}
+
+		rc = vmm_host_irq_register(irq, "mct_tick_local",
 					   exynos4_mct_tick_isr, mevt);
 		if (rc) {
 			return rc;
@@ -514,15 +581,6 @@ int __cpuinit exynos4_local_timer_init(virtual_addr_t timer_base, u32 hirq,
 	}
 
 	return vmm_clockchip_register(evt);
-}
-
-void __init exynos4_timer_init(void)
-{
-	if ((soc_is_exynos4210()) || (soc_is_exynos5250())) {
-		mct_int_type = MCT_INT_SPI;
-	} else {
-		mct_int_type = MCT_INT_PPI;
-	}
 }
 
 #endif				/* CONFIG_SAMSUNG_MCT_LOCAL_TIMERS */

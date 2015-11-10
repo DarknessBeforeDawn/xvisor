@@ -175,14 +175,14 @@ static int bcm2835_sdhci_driver_probe(struct vmm_device *dev,
 		goto free_host;
 	}
 
-	bcm_host->irq = 0;
-	rc = vmm_devtree_irq_get(dev->node, &bcm_host->irq, 0);
-	if (rc) {
+	bcm_host->irq = vmm_devtree_irq_parse_map(dev->node, 0);
+	if (!bcm_host->irq) {
+		rc = VMM_ENODEV;
 		goto free_reg;
 	}
 
 	bcm_host->clk = clk_get(dev, NULL);
-	if (VMM_IS_ERR(bcm_host->clk)) {
+	if (VMM_IS_ERR_OR_NULL(bcm_host->clk)) {
 		rc = VMM_PTR_ERR(bcm_host->clk);
 		goto free_reg;
 	}
@@ -244,7 +244,7 @@ static int bcm2835_sdhci_driver_remove(struct vmm_device *dev)
 }
 
 static struct vmm_devtree_nodeid bcm2835_sdhci_devid_table[] = {
-	{.type = "mmc",.compatible = "brcm,bcm2835-sdhci"},
+	{ .compatible = "brcm,bcm2835-sdhci" },
 	{ /* end of list */ },
 };
 

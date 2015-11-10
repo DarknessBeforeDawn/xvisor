@@ -433,8 +433,9 @@ static int mmci_driver_probe(struct vmm_device *dev,
 	}
 	host->base = (struct sdi_registers *)base;
 
-	rc = vmm_devtree_irq_get(dev->node, &host->irq0, 0);
-	if (rc) {
+	host->irq0 = vmm_devtree_irq_parse_map(dev->node, 0);
+	if (!host->irq0) {
+		rc = VMM_ENODEV;
 		goto free_reg;
 	}
 	if ((rc = vmm_host_irq_register(host->irq0, dev->name, 
@@ -442,8 +443,8 @@ static int mmci_driver_probe(struct vmm_device *dev,
 		goto free_reg;
 	}
 
-	rc = vmm_devtree_irq_get(dev->node, &host->irq1, 1);
-	if (!rc) {
+	host->irq1 = vmm_devtree_irq_parse_map(dev->node, 1);
+	if (host->irq1) {
 		if ((rc = vmm_host_irq_register(host->irq1, dev->name, 
 						mmci_pio_irq_handler, mmc))) {
 			goto free_irq0;
@@ -568,8 +569,8 @@ static u32 mmci_v2[]= {
 };
 
 static struct vmm_devtree_nodeid mmci_devid_table[] = {
-	{.type = "mmc",.compatible = "arm,pl180", .data = &mmci_v1},
-	{.type = "mmc",.compatible = "arm,pl180v2", .data = &mmci_v2},
+	{ .compatible = "arm,pl180", .data = &mmci_v1 },
+	{ .compatible = "arm,pl180v2", .data = &mmci_v2 },
 	{ /* end of list */ },
 };
 

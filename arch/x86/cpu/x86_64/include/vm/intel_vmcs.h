@@ -113,7 +113,7 @@ extern u8 cpu_has_vmx_ins_outs_instr_info;
 #define VMX_EPT_MEMORY_TYPE_UC                  0x00000100
 #define VMX_EPT_MEMORY_TYPE_WB                  0x00004000
 #define VMX_EPT_SUPERPAGE_2MB                   0x00010000
-#define VMX_EPT_SUPERPAGE_1GB					0x00020000
+#define VMX_EPT_SUPERPAGE_1GB			0x00020000
 #define VMX_EPT_INVEPT_INSTRUCTION              0x00100000
 #define VMX_EPT_INVEPT_SINGLE_CONTEXT           0x02000000
 #define VMX_EPT_INVEPT_ALL_CONTEXT              0x04000000
@@ -310,9 +310,11 @@ enum vmcs_field {
 
 extern void vmx_detect_capability(void);
 extern struct vmcs* create_vmcs(void);
+void *alloc_vmx_on_region(void);
 extern void vmx_set_control_params(struct vcpu_hw_context *context);
 extern void vmx_set_vm_to_mbr_start_state(struct vcpu_hw_context *context);
 extern void vmx_save_host_state(struct vcpu_hw_context *context);
+extern void vmx_set_vm_to_powerup_state(struct vcpu_hw_context *context);
 
 extern void vmx_asm_vmexit_handler(void);
 extern void vmx_asm_vmentry(void);

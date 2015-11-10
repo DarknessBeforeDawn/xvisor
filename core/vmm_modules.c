@@ -716,6 +716,18 @@ int vmm_modules_unload(struct vmm_module *mod)
 	return VMM_OK;
 }
 
+#else
+
+int vmm_modules_load(virtual_addr_t load_addr, virtual_size_t load_size)
+{
+	return VMM_ENOTAVAIL;
+}
+
+int vmm_modules_unload(struct vmm_module *mod)
+{
+	return VMM_ENOTAVAIL;
+}
+
 #endif
 
 struct vmm_module *vmm_modules_getmodule(u32 index)
@@ -770,6 +782,7 @@ static struct modules_list * __init aggregate_modules(u32 mod_start, u32 sz)
 		(struct modules_list *)vmm_malloc(sizeof(struct modules_list));
 
 	INIT_LIST_HEAD(&cong_mod_list->mod_list);
+	cong_mod_list->nr_modules = 0;
 	/*
 	 * Search for modules signatures from mod start to
 	 * end of modules area picking up modules information

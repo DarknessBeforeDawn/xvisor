@@ -26,10 +26,11 @@
 #include <vmm_heap.h>
 #include <vmm_stdio.h>
 #include <vmm_host_irq.h>
+#include <vmm_host_irqext.h>
+#include <vmm_host_irqdomain.h>
 #include <arch_cpu_irq.h>
 #include <arch_host_irq.h>
 #include <libs/stringlib.h>
-#include <vmm_host_extirq.h>
 
 struct vmm_host_irqs_ctrl {
 	vmm_spinlock_t lock;
@@ -39,6 +40,28 @@ struct vmm_host_irqs_ctrl {
 };
 
 static struct vmm_host_irqs_ctrl hirqctrl;
+
+void vmm_handle_percpu_irq(struct vmm_host_irq *irq, u32 cpu, void *data)
+{
+	irq_flags_t flags;
+	struct vmm_host_irq_action *act;
+
+	if (irq->chip && irq->chip->irq_ack) {
+		irq->chip->irq_ack(irq);
+	}
+
+	vmm_read_lock_irqsave_lite(&irq->action_lock[cpu], flags);
+	list_for_each_entry(act, &irq->action_list[cpu], head) {
+		if (act->func(irq->num, act->dev) == VMM_IRQ_HANDLED) {
+			break;
+		}
+	}
+	vmm_read_unlock_irqrestore_lite(&irq->action_lock[cpu], flags);
+
+	if (irq->chip && irq->chip->irq_eoi) {
+		irq->chip->irq_eoi(irq);
+	}
+}
 
 void vmm_handle_fast_eoi(struct vmm_host_irq *irq, u32 cpu, void *data)
 {
@@ -89,13 +112,13 @@ void vmm_handle_level_irq(struct vmm_host_irq *irq, u32 cpu, void *data)
 	}
 }
 
-struct vmm_host_irq *vmm_host_irq_get(u32 hirq_num)
+struct vmm_host_irq *vmm_host_irq_get(u32 hirq)
 {
-	if (hirq_num < CONFIG_HOST_IRQ_COUNT) {
-		return &hirqctrl.irq[hirq_num];
+	if (hirq < CONFIG_HOST_IRQ_COUNT) {
+		return &hirqctrl.irq[hirq];
 	}
 
-	return vmm_host_extirq_get(hirq_num);
+	return __vmm_host_irqext_get(hirq);
 }
 
 int vmm_host_generic_irq_exec(u32 hirq_no)
@@ -108,15 +131,11 @@ int vmm_host_generic_irq_exec(u32 hirq_no)
 
 	cpu = vmm_smp_processor_id();
 	irq->count[cpu]++;
-	if (!(irq->state & VMM_IRQ_STATE_PER_CPU)) {
-		irq->state |= VMM_IRQ_STATE_INPROGRESS;
-	}
+	irq->in_progress[cpu] = TRUE;
 	if (irq->handler) {
 		irq->handler(irq, cpu, irq->handler_data);
 	}
-	if (!(irq->state & VMM_IRQ_STATE_PER_CPU)) {
-		irq->state &= ~VMM_IRQ_STATE_INPROGRESS;
-	}
+	irq->in_progress[cpu] = FALSE;
 
 	return VMM_OK;
 }
@@ -156,11 +175,32 @@ u32 vmm_host_irq_count(void)
 	return CONFIG_HOST_IRQ_COUNT;
 }
 
-int vmm_host_irq_set_chip(u32 hirq_num, struct vmm_host_irq_chip *chip)
+int vmm_host_irq_set_hwirq(u32 hirq, u32 hwirq)
 {
 	struct vmm_host_irq *irq = NULL;
 
-	if (NULL == (irq = vmm_host_irq_get(hirq_num)))
+	if (NULL == (irq = vmm_host_irq_get(hirq)))
+		return VMM_EFAIL;
+
+	irq->hwirq = hwirq;
+	return VMM_OK;
+}
+
+u32 vmm_host_irq_get_hwirq(u32 hirq)
+{
+	struct vmm_host_irq *irq = NULL;
+
+	if (NULL == (irq = vmm_host_irq_get(hirq)))
+		return hirq;
+
+	return irq->hwirq;
+}
+
+int vmm_host_irq_set_chip(u32 hirq, struct vmm_host_irq_chip *chip)
+{
+	struct vmm_host_irq *irq = NULL;
+
+	if (NULL == (irq = vmm_host_irq_get(hirq)))
 		return VMM_EFAIL;
 
 	irq->chip = chip;
@@ -172,11 +212,11 @@ struct vmm_host_irq_chip *vmm_host_irq_get_chip(struct vmm_host_irq *irq)
 	return (irq) ? irq->chip : NULL;
 }
 
-int vmm_host_irq_set_chip_data(u32 hirq_num, void *chip_data)
+int vmm_host_irq_set_chip_data(u32 hirq, void *chip_data)
 {
 	struct vmm_host_irq *irq = NULL;
 
-	if (NULL == (irq = vmm_host_irq_get(hirq_num)))
+	if (NULL == (irq = vmm_host_irq_get(hirq)))
 		return VMM_EFAIL;
 
 	irq->chip_data = chip_data;
@@ -188,71 +228,74 @@ void *vmm_host_irq_get_chip_data(struct vmm_host_irq *irq)
 	return (irq) ? irq->chip_data : NULL;
 }
 
-int vmm_host_irq_set_handler(u32 hirq_num, vmm_host_irq_handler_t handler)
+int vmm_host_irq_set_handler(u32 hirq, vmm_host_irq_handler_t handler)
 {
 	struct vmm_host_irq *irq = NULL;
 
-	if (NULL == (irq = vmm_host_irq_get(hirq_num)))
+	if (NULL == (irq = vmm_host_irq_get(hirq)))
 		return VMM_EFAIL;
 
 	irq->handler = handler;
 	return VMM_OK;
 }
 
-vmm_host_irq_handler_t vmm_host_irq_get_handler(u32 hirq_num)
+vmm_host_irq_handler_t vmm_host_irq_get_handler(u32 hirq)
 {
 	struct vmm_host_irq *irq = NULL;
 
-	if (NULL == (irq = vmm_host_irq_get(hirq_num)))
+	if (NULL == (irq = vmm_host_irq_get(hirq)))
 		return NULL;
 
 	return irq->handler;
 }
 
-int vmm_host_irq_set_handler_data(u32 hirq_num, void *data)
+int vmm_host_irq_set_handler_data(u32 hirq, void *data)
 {
 	struct vmm_host_irq *irq = NULL;
 
-	if (NULL == (irq = vmm_host_irq_get(hirq_num)))
+	if (NULL == (irq = vmm_host_irq_get(hirq)))
 		return VMM_EFAIL;
 
 	irq->handler_data = data;
 	return VMM_OK;
 }
 
-void *vmm_host_irq_get_handler_data(u32 hirq_num)
+void *vmm_host_irq_get_handler_data(u32 hirq)
 {
 	struct vmm_host_irq *irq = NULL;
 
-	if (NULL == (irq = vmm_host_irq_get(hirq_num)))
+	if (NULL == (irq = vmm_host_irq_get(hirq)))
 		return NULL;
 
 	return irq->handler_data;
 }
 
-int vmm_host_irq_set_affinity(u32 hirq_num, 
+int vmm_host_irq_set_affinity(u32 hirq, 
 			      const struct vmm_cpumask *dest, 
 			      bool force)
 {
 	struct vmm_host_irq *irq;
 
-	if (NULL == (irq = vmm_host_irq_get(hirq_num)))
+	if (NULL == (irq = vmm_host_irq_get(hirq)))
 		return VMM_ENOTAVAIL;
+
+	if (vmm_host_irq_is_per_cpu(irq))
+		return VMM_EINVALID;
 
 	if (irq->chip && irq->chip->irq_set_affinity) {
 		irq->state |= VMM_IRQ_STATE_AFFINITY_SET;
 		return irq->chip->irq_set_affinity(irq, dest, force);
 	}
 
-	return VMM_EFAIL;
+	return VMM_OK;
 }
 
-int vmm_host_irq_set_type(u32 hirq_num, u32 type)
+int vmm_host_irq_set_type(u32 hirq, u32 type)
 {
 	int rc = VMM_EFAIL;
 	struct vmm_host_irq *irq;
 
-	if (NULL == (irq = vmm_host_irq_get(hirq_num)))
+	if (NULL == (irq = vmm_host_irq_get(hirq)))
 		return VMM_ENOTAVAIL;
 
 	type &= VMM_IRQ_TYPE_SENSE_MASK;
@@ -277,56 +320,56 @@ int vmm_host_irq_set_type(u32 hirq_num, u32 type)
 	return rc;
 }
 
-int vmm_host_irq_mark_per_cpu(u32 hirq_num)
+int vmm_host_irq_mark_per_cpu(u32 hirq)
 {
 	struct vmm_host_irq *irq;
 
-	if (NULL == (irq = vmm_host_irq_get(hirq_num)))
+	if (NULL == (irq = vmm_host_irq_get(hirq)))
 		return VMM_ENOTAVAIL;
 
 	irq->state |= VMM_IRQ_STATE_PER_CPU;
 	return VMM_OK;
 }
 
-int vmm_host_irq_unmark_per_cpu(u32 hirq_num)
+int vmm_host_irq_unmark_per_cpu(u32 hirq)
 {
 	struct vmm_host_irq *irq;
 
-	if (NULL == (irq = vmm_host_irq_get(hirq_num)))
+	if (NULL == (irq = vmm_host_irq_get(hirq)))
 		return VMM_ENOTAVAIL;
 
 	irq->state &= ~VMM_IRQ_STATE_PER_CPU;
 	return VMM_OK;
 }
 
-int vmm_host_irq_mark_routed(u32 hirq_num)
+int vmm_host_irq_mark_routed(u32 hirq)
 {
 	struct vmm_host_irq *irq;
 
-	if (NULL == (irq = vmm_host_irq_get(hirq_num)))
+	if (NULL == (irq = vmm_host_irq_get(hirq)))
 		return VMM_ENOTAVAIL;
 
 	irq->state |= VMM_IRQ_STATE_ROUTED;
 	return VMM_OK;
 }
 
-int vmm_host_irq_unmark_routed(u32 hirq_num)
+int vmm_host_irq_unmark_routed(u32 hirq)
 {
 	struct vmm_host_irq *irq;
 
-	if (NULL == (irq = vmm_host_irq_get(hirq_num)))
+	if (NULL == (irq = vmm_host_irq_get(hirq)))
 		return VMM_ENOTAVAIL;
 
 	irq->state &= ~VMM_IRQ_STATE_ROUTED;
 	return VMM_OK;
 }
 
-int vmm_host_irq_get_routed_state(u32 hirq_num, u32 *val, u32 mask)
+int vmm_host_irq_get_routed_state(u32 hirq, u32 *val, u32 mask)
 {
 	struct vmm_host_irq *irq;
 	struct vmm_host_irq_chip *chip;
 
-	if (NULL == (irq = vmm_host_irq_get(hirq_num)))
+	if (NULL == (irq = vmm_host_irq_get(hirq)))
 		return VMM_ENOTAVAIL;
 
 	if (NULL == (chip = vmm_host_irq_get_chip(irq)))
@@ -340,12 +383,12 @@ int vmm_host_irq_get_routed_state(u32 hirq_num, u32 *val, u32 mask)
 	return VMM_OK;
 }
 
-int vmm_host_irq_set_routed_state(u32 hirq_num, u32 val, u32 mask)
+int vmm_host_irq_set_routed_state(u32 hirq, u32 val, u32 mask)
 {
 	struct vmm_host_irq *irq;
 	struct vmm_host_irq_chip *chip;
 
-	if (NULL == (irq = vmm_host_irq_get(hirq_num)))
+	if (NULL == (irq = vmm_host_irq_get(hirq)))
 		return VMM_ENOTAVAIL;
 
 	if (NULL == (chip = vmm_host_irq_get_chip(irq)))
@@ -359,18 +402,40 @@ int vmm_host_irq_set_routed_state(u32 hirq_num, u32 val, u32 mask)
 	return VMM_OK;
 }
 
-int vmm_host_irq_enable(u32 hirq_num)
+int vmm_host_irq_mark_ipi(u32 hirq)
 {
 	struct vmm_host_irq *irq;
 
-	if (NULL == (irq = vmm_host_irq_get(hirq_num)))
+	if (NULL == (irq = vmm_host_irq_get(hirq)))
+		return VMM_ENOTAVAIL;
+
+	irq->state |= VMM_IRQ_STATE_IPI;
+	return VMM_OK;
+}
+
+int vmm_host_irq_unmark_ipi(u32 hirq)
+{
+	struct vmm_host_irq *irq;
+
+	if (NULL == (irq = vmm_host_irq_get(hirq)))
+		return VMM_ENOTAVAIL;
+
+	irq->state &= ~VMM_IRQ_STATE_IPI;
+	return VMM_OK;
+}
+
+int vmm_host_irq_enable(u32 hirq)
+{
+	struct vmm_host_irq *irq;
+
+	if (NULL == (irq = vmm_host_irq_get(hirq)))
 		return VMM_ENOTAVAIL;
 
 	irq->state &= ~VMM_IRQ_STATE_DISABLED;
 	if (irq->chip) {
 		if (irq->chip->irq_enable) {
 			irq->chip->irq_enable(irq);
-		} else {
+		} else if (irq->chip->irq_unmask) {
 			irq->chip->irq_unmask(irq);
 		}
 		return VMM_OK;
@@ -378,18 +443,18 @@ int vmm_host_irq_enable(u32 hirq_num)
 	return VMM_ENOTAVAIL;
 }
 
-int vmm_host_irq_disable(u32 hirq_num)
+int vmm_host_irq_disable(u32 hirq)
 {
 	struct vmm_host_irq *irq;
 
-	if (NULL == (irq = vmm_host_irq_get(hirq_num)))
+	if (NULL == (irq = vmm_host_irq_get(hirq)))
 		return VMM_ENOTAVAIL;
 
 	irq->state |= VMM_IRQ_STATE_DISABLED;
 	if (irq->chip) {
 		if (irq->chip->irq_disable) {
 			irq->chip->irq_disable(irq);
-		} else {
+		} else if (irq->chip->irq_mask) {
 			irq->chip->irq_mask(irq);
 		}
 	}
@@ -397,25 +462,25 @@ int vmm_host_irq_disable(u32 hirq_num)
 	return VMM_OK;
 }
 
-int vmm_host_irq_unmask(u32 hirq_num)
+int vmm_host_irq_unmask(u32 hirq)
 {
 	struct vmm_host_irq *irq;
 
-	if (NULL == (irq = vmm_host_irq_get(hirq_num)))
+	if (NULL == (irq = vmm_host_irq_get(hirq)))
 		return VMM_ENOTAVAIL;
 
 	if (irq->chip && irq->chip->irq_unmask) {
-		irq->chip->irq_mask(irq);
+		irq->chip->irq_unmask(irq);
 		irq->state &= ~VMM_IRQ_STATE_MASKED;
 	}
 	return VMM_OK;
 }
 
-int vmm_host_irq_mask(u32 hirq_num)
+int vmm_host_irq_mask(u32 hirq)
 {
 	struct vmm_host_irq *irq;
 
-	if (NULL == (irq = vmm_host_irq_get(hirq_num)))
+	if (NULL == (irq = vmm_host_irq_get(hirq)))
 		return VMM_ENOTAVAIL;
 
 	if (irq->chip && irq->chip->irq_mask) {
@@ -425,18 +490,45 @@ int vmm_host_irq_mask(u32 hirq_num)
 	return VMM_OK;
 }
 
-int vmm_host_irq_raise(u32 hirq_num,
+int vmm_host_irq_raise(u32 hirq,
 		       const struct vmm_cpumask *dest)
 {
 	struct vmm_host_irq *irq;
 
-	if (NULL == (irq = vmm_host_irq_get(hirq_num)))
+	if (NULL == (irq = vmm_host_irq_get(hirq)))
 		return VMM_ENOTAVAIL;
 
 	if (irq->chip && irq->chip->irq_raise) {
 		irq->chip->irq_raise(irq, dest);
 	}
 	return VMM_OK;
+}
+
+int vmm_host_irq_find(u32 hirq_start, u32 state_mask, u32 *hirq)
+{
+	u32 ite;
+	bool found = FALSE;
+	struct vmm_host_irq *irq;
+
+	if ((CONFIG_HOST_IRQ_COUNT <= hirq_start) || !hirq) {
+		return VMM_EINVALID;
+	}
+	if (!state_mask) {
+		return VMM_ENOTAVAIL;
+	}
+
+	for (ite = hirq_start; ite < CONFIG_HOST_IRQ_COUNT; ite++) {
+		if (NULL == (irq = vmm_host_irq_get(ite))) {
+			continue;
+		}
+		if ((irq->state & state_mask) == state_mask) {
+			found = TRUE;
+			*hirq = ite;
+			break;
+		}
+	}
+
+	return (found) ? VMM_OK : VMM_ENOTAVAIL;
 }
 
 static int host_irq_register(struct vmm_host_irq *irq,
@@ -479,7 +571,7 @@ static int host_irq_register(struct vmm_host_irq *irq,
 	return VMM_OK;
 }
 
-int vmm_host_irq_register(u32 hirq_num, 
+int vmm_host_irq_register(u32 hirq, 
 			  const char *name,
 			  vmm_host_irq_function_t func,
 			  void *dev)
@@ -488,7 +580,7 @@ int vmm_host_irq_register(u32 hirq_num,
 	u32 cpu;
 	struct vmm_host_irq *irq;
 
-	if (NULL == (irq = vmm_host_irq_get(hirq_num)))
+	if (NULL == (irq = vmm_host_irq_get(hirq)))
 		return VMM_ENOTAVAIL;
 
 	if (vmm_host_irq_is_per_cpu(irq)) {
@@ -496,7 +588,7 @@ int vmm_host_irq_register(u32 hirq_num,
 				       vmm_smp_processor_id());
 		if (rc) {
 			return rc;
-			}
+		}
 	} else {
 		for (cpu = 0; cpu < CONFIG_CPU_COUNT; cpu++) {
 			rc = host_irq_register(irq, name, func,
@@ -506,7 +598,7 @@ int vmm_host_irq_register(u32 hirq_num,
 			}
 		}
 	}
-	return vmm_host_irq_enable(hirq_num);
+	return vmm_host_irq_enable(hirq);
 }
 
 static int host_irq_unregister(struct vmm_host_irq *irq, void *dev,
@@ -540,14 +632,14 @@ static int host_irq_unregister(struct vmm_host_irq *irq, void *dev,
 	return VMM_OK;
 }
 
-int vmm_host_irq_unregister(u32 hirq_num, void *dev)
+int vmm_host_irq_unregister(u32 hirq, void *dev)
 {
 	int rc;
 	u32 cpu;
 	bool disable;
 	struct vmm_host_irq *irq;
 
-	if (NULL == (irq = vmm_host_irq_get(hirq_num)))
+	if (NULL == (irq = vmm_host_irq_get(hirq)))
 		return VMM_ENOTAVAIL;
 
 	disable = FALSE;
@@ -568,7 +660,7 @@ int vmm_host_irq_unregister(u32 hirq_num, void *dev)
 		}
 	}
 	if (disable) {
-		return vmm_host_irq_disable(hirq_num);
+		return vmm_host_irq_disable(hirq);
 	}
 	return VMM_OK;
 }
@@ -608,7 +700,7 @@ static void __cpuinit host_irq_nidtbl_found(struct vmm_devtree_node *node,
  * Initialize a vmm_host_irq structure
  * Warning: The associated IRQ must be disabled!
  */
-void __vmm_host_irq_init_desc(struct vmm_host_irq *irq, u32 num)
+void __vmm_host_irq_init_desc(struct vmm_host_irq *irq, u32 num, u32 hwirq)
 {
 	u32 cpu = 0;
 
@@ -616,6 +708,7 @@ void __vmm_host_irq_init_desc(struct vmm_host_irq *irq, u32 num)
 		return;
 
 	irq->num = num;
+	irq->hwirq = hwirq;
 	irq->name = NULL;
 	irq->state = (VMM_IRQ_TYPE_NONE |
 		      VMM_IRQ_STATE_DISABLED |
@@ -655,12 +748,24 @@ int __cpuinit vmm_host_irq_init(void)
 
 		/* Reset the handler array */
 		for (ite = 0; ite < CONFIG_HOST_IRQ_COUNT; ite++) {
-			__vmm_host_irq_init_desc(&hirqctrl.irq[ite], ite);
+			__vmm_host_irq_init_desc(&hirqctrl.irq[ite], ite, ite);
 		}
 
 		/* Determine clockchip matches from nodeid table */
 		hirqctrl.matches = 
 			vmm_devtree_nidtbl_create_matches("host_irq");
+
+		/* Initialize extended host IRQs */
+		ret = vmm_host_irqext_init();
+		if (ret != VMM_OK) {
+			return ret;
+		}
+
+		/* Initialize host IRQ Domains */
+		ret = vmm_host_irqdomain_init();
+		if (ret != VMM_OK) {
+			return ret;
+		}
 	}
 
 	/* Initialize board specific PIC */
@@ -680,10 +785,6 @@ int __cpuinit vmm_host_irq_init(void)
 
 	/* Setup interrupts in CPU */
 	if ((ret = arch_cpu_irq_setup())) {
-		return ret;
-	}
-
-	if (VMM_OK != (ret = vmm_host_extirq_init())) {
 		return ret;
 	}
 

@@ -228,9 +228,9 @@ static int __cpuinit sp804_clockchip_init(struct vmm_devtree_node *node)
 		return VMM_ENODEV;
 	}
 
-	rc = vmm_devtree_irq_get(node, &hirq, 0);
-	if (rc) {
-		return rc;
+	hirq = vmm_devtree_irq_parse_map(node, 0);
+	if (!hirq) {
+		return VMM_ENODEV;
 	}
 
 	rc = vmm_devtree_regmap(node, &base, 0);
@@ -240,13 +240,13 @@ static int __cpuinit sp804_clockchip_init(struct vmm_devtree_node *node)
 	base += 0x20;
 
 	clk = of_clk_get(node, 1);
-	if (VMM_IS_ERR(clk)) {
+	if (VMM_IS_ERR_OR_NULL(clk)) {
 		clk = of_clk_get(node, 0);
 	}
-	if (VMM_IS_ERR(clk)) {
+	if (VMM_IS_ERR_OR_NULL(clk)) {
 		clk = clk_get_sys("sp804", "arm,sp804");
 	}
-	if (VMM_IS_ERR(clk)) {
+	if (VMM_IS_ERR_OR_NULL(clk)) {
 		vmm_devtree_regunmap(node, base, 0);
 		return VMM_PTR_ERR(clk);
 	}

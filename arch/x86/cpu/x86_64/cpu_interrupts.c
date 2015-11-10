@@ -33,6 +33,7 @@
 #include <cpu_interrupts.h>
 #include <stacktrace.h>
 #include <arch_guest_helper.h>
+#include <cpu_extables.h>
 
 #undef __DEBUG
 //#define __DEBUG
@@ -196,7 +197,7 @@ static void setup_gate_handlers(void)
 	set_trap_gate(19, VIRT_TO_PHYS(_exception_simd_err), EXCEPTION_STACK);		/* simd coproc error */
 
 	set_interrupt_gate(2, VIRT_TO_PHYS(_exception_nmi), NMI_STACK);			/* NMI */
-	set_interrupt_gate(14, VIRT_TO_PHYS(_exception_page_fault), REGULAR_INT_STACK);	/* page fault */
+	set_interrupt_gate(14, VIRT_TO_PHYS(_exception_page_fault), DEBUG_STACK);	/* page fault */
 }
 
 int __cpuinit arch_cpu_irq_setup(void)
@@ -224,9 +225,8 @@ extern void print_stacktrace(struct stack_trace *trace);
 		trace.skip = 0;					\
 								\
 		dump_vcpu_regs(regs);					\
+                vmm_printf("\n");                                       \
 		arch_save_stacktrace_regs(regs, &trace);		\
-									\
-		vmm_printf("\n");					\
 		vmm_printf("call trace:\n");				\
 		print_stacktrace(&trace);				\
 	} while(0);
@@ -240,17 +240,21 @@ int do_page_fault(int error, arch_regs_t *regs)
 	__asm__ __volatile__("movq %%cr2, %0\n\t"
 			     :"=r"(bad_vaddr));
 
-	vmm_printf("\n\n");
-	cvcpu = vmm_scheduler_current_vcpu();
+        if (!fixup_exception(regs)) {
+                vmm_printf("\n\n");
+                cvcpu = vmm_scheduler_current_vcpu();
 
-	if (cvcpu) {
-		do_panic_dump(regs, "Unhandled access from VMM vcpu %s @ address %lx\n",
-			cvcpu->name, bad_vaddr);
-	} else {
-		do_panic_dump(regs, "(Page Fault): Unhandled VMM access to address %lx\n", bad_vaddr);
-	}
+                if (cvcpu) {
+                        do_panic_dump(regs, "Unhandled access from VMM vcpu %s @ address %lx\n",
+                                      cvcpu->name, bad_vaddr);
+                } else {
+                        do_panic_dump(regs, "(Page Fault): Unhandled VMM access to address %lx\n", bad_vaddr);
+                }
 
-	while(1); /* Should never reach here. */
+                while(1); /* Should never reach here. */
+        }
+
+        return VMM_OK;
 }
 
 int do_breakpoint(int intno, arch_regs_t *regs)
@@ -261,16 +265,24 @@ int do_breakpoint(int intno, arch_regs_t *regs)
 
 int do_generic_exception_handler(int intno, arch_regs_t *regs)
 {
-	vmm_printf("Unhandled exception %d\n", intno);
-	do_panic_dump(regs, "Unhandled exception in VMM code.\n");
-	while(1);
+        if (!fixup_exception(regs)) {
+                vmm_printf("Unhandled exception %d\n", intno);
+                do_panic_dump(regs, "Unhandled exception in VMM code.\n");
+                while(1);
+        }
+
+        return VMM_OK;
 }
 
 int do_gpf(int intno, arch_regs_t *regs)
 {
-	do_panic_dump(regs, "(General Proctection Fault)\n");
+        if (!fixup_exception(regs)) {
+                do_panic_dump(regs, "(General Proctection Fault)\n");
 
-	while(1); /* Should never reach here. */
+                while(1); /* Should never reach here. */
+        }
+
+        return VMM_OK;
 }
 
 int do_generic_int_handler(int intno, arch_regs_t *regs)

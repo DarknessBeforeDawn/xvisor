@@ -28,7 +28,7 @@
 # Current Version
 MAJOR = 0
 MINOR = 2
-RELEASE = 6
+RELEASE = 7
 
 # Select Make Options:
 # o  Do not use make's built-in rules and variables
@@ -65,7 +65,7 @@ endif
 export PROJECT_NAME = Xvisor (eXtensible Versatile hypervISOR)
 export PROJECT_VERSION = $(MAJOR).$(MINOR).$(RELEASE)
 export CONFIG_DIR=$(build_dir)/tmpconf
-export CONFIG_FILE=$(build_dir)/.config
+export CONFIG_FILE=$(CONFIG_DIR)/.config
 
 # Openconf settings
 export OPENCONF_PROJECT = $(PROJECT_NAME)
@@ -126,7 +126,7 @@ cppflags+=$(cpu-cppflags)
 cppflags+=$(board-cppflags)
 cppflags+=$(libs-cppflags-y)
 cc=$(CROSS_COMPILE)gcc
-cflags=-g -Wall -nostdlib -fno-builtin -D__VMM__
+cflags=-g -Wall -nostdlib --sysroot=$(drivers_dir)/include -fno-builtin -D__VMM__
 cflags+=$(board-cflags) 
 cflags+=$(cpu-cflags) 
 cflags+=$(libs-cflags-y) 
@@ -185,15 +185,17 @@ compile_cpp = $(V)mkdir -p `dirname $(1)`; \
 	     $(cpp) $(cppflags) $(2) | grep -v "\#" > $(1)
 compile_cc_dep = $(V)mkdir -p `dirname $(1)`; \
 	     echo " (cc-dep)    $(subst $(build_dir)/,,$(1))"; \
-	     echo -n `dirname $(1)`/ > $(1); \
-	     $(cc) $(cflags) $(call dynamic_flags,$(1),$(2)) -MM $(2) >> $(1)
+	     echo -n `dirname $(1)`/ > $(1) && \
+	     $(cc) $(cflags) $(call dynamic_flags,$(1),$(2))   \
+	       -MM $(2) >> $(1) || rm -f $(1)
 compile_cc = $(V)mkdir -p `dirname $(1)`; \
 	     echo " (cc)        $(subst $(build_dir)/,,$(1))"; \
 	     $(cc) $(cflags) $(call dynamic_flags,$(1),$<) -c $(2) -o $(1)
 compile_as_dep = $(V)mkdir -p `dirname $(1)`; \
 	     echo " (as-dep)    $(subst $(build_dir)/,,$(1))"; \
-	     echo -n `dirname $(1)`/ > $(1); \
-	     $(as) $(asflags) $(call dynamic_flags,$(1),$(2)) -MM $(2) >> $(1)
+	     echo -n `dirname $(1)`/ > $(1) && \
+	     $(as) $(asflags) $(call dynamic_flags,$(1),$(2))  \
+	       -MM $(2) >> $(1) || rm -f $(1)
 compile_as = $(V)mkdir -p `dirname $(1)`; \
 	     echo " (as)        $(subst $(build_dir)/,,$(1))"; \
 	     $(as) $(asflags) $(call dynamic_flags,$(1),$<) -c $(2) -o $(1)
@@ -397,14 +399,20 @@ all-deps-2 = $(if $(findstring clean,$(MAKECMDGOALS)),,$(all-deps-1))
 .PHONY: clean
 clean:
 ifeq ($(build_dir),$(CURDIR)/build)
-	$(if $(V), @echo " (rm)        $(build_dir)")
-	$(V)rm -rf $(build_dir)
+	$(if $(V), @echo " (clean)     $(build_dir)")
+	$(V)find $(build_dir) -type d ! -name '$(shell basename $(CONFIG_DIR))' -a \
+	! -name '$(shell basename $(build_dir))' -exec rm -rf {} +
+	$(V)find $(build_dir) -maxdepth 1 -type f -exec rm -rf {} +
 endif
 	$(V)$(MAKE) -C $(src_dir)/tools/dtc clean
 
 # Rule for "make distclean"
 .PHONY: distclean
 distclean:
+ifeq ($(build_dir),$(CURDIR)/build)
+	$(if $(V), @echo " (rm)       $(build_dir)")
+	$(V)rm -rf $(build_dir)
+endif
 	$(V)$(MAKE) -C $(src_dir)/tools/openconf clean
 
 # Include config file rules

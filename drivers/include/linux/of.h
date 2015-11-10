@@ -4,6 +4,7 @@
 #include <linux/types.h>
 #include <linux/bitops.h>
 #include <linux/errno.h>
+#include <linux/mod_devicetable.h>
 #include <linux/spinlock.h>
 #include <asm/byteorder.h>
 #include <asm/errno.h>
@@ -97,6 +98,8 @@ static inline int of_modalias_node(struct device_node *node,
 
 #define of_count_phandle_with_args \
 				vmm_devtree_count_phandle_with_args
+#define	of_parse_phandle \
+				vmm_devtree_parse_phandle
 #define	of_parse_phandle_with_args \
 				vmm_devtree_parse_phandle_with_args
 #define	of_parse_phandle_with_fixed_args \
@@ -118,6 +121,9 @@ static inline int of_modalias_node(struct device_node *node,
 
 #define	for_each_available_child_of_node(np, child)	\
 		vmm_devtree_for_each_child(child, np)
+
+#define	of_get_child_by_name(np, name)	\
+		vmm_devtree_get_child_by_name(np, name)
 
 #define	of_device_is_compatible(device, name)		\
 		vmm_devtree_is_compatible(device, name)

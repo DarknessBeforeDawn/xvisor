@@ -48,12 +48,12 @@
 
 struct pci_devemu_ctrl {
 	struct vmm_mutex emu_lock;
-        struct dlist emu_list;
+	struct dlist emu_list;
 };
 
 static struct pci_devemu_ctrl pci_emu_dectrl;
 
-static struct pci_bus *pci_find_bus_by_id(struct pci_host_controller *controller,
+struct pci_bus *pci_find_bus_by_id(struct pci_host_controller *controller,
 					  u32 bus_id)
 {
 	struct pci_bus *bus = NULL;
@@ -72,6 +72,82 @@ static struct pci_bus *pci_find_bus_by_id(struct pci_host_controller *controller
 
 	return NULL;
 }
+
+int pci_emu_find_pci_device(struct pci_host_controller *controller,
+			    int bus_id, int dev_id, struct pci_device **pdev)
+{
+	struct pci_bus *bus = pci_find_bus_by_id(controller, bus_id);
+	struct pci_device *ldev;
+	irq_flags_t flags;
+
+	if (!bus)
+		return VMM_ENODEV;
+
+	vmm_spin_lock_irqsave(&bus->lock, flags);
+
+	list_for_each_entry(ldev, &bus->attached_devices, head) {
+		if (ldev->device_id == dev_id) {
+			vmm_spin_unlock_irqrestore(&bus->lock, flags);
+			*pdev = ldev;
+			return VMM_OK;
+		}
+	}
+
+	vmm_spin_unlock_irqrestore(&bus->lock, flags);
+
+	return VMM_ENODEV;
+}
+
+struct pci_device *pci_emu_pci_dev_find_by_addr(struct pci_host_controller
+						*controller, u32 addr)
+{
+	u8 bus_num = addr >> 16;
+	u8 devfn = addr >> 8;
+	u32 devid = (bus_num << 8 | devfn);
+	struct pci_bus *bus;
+	irq_flags_t flags;
+	struct pci_device *pdev = NULL;
+
+	bus = pci_find_bus_by_id(controller, bus_num);
+
+	if (!bus)
+		return NULL;
+
+	vmm_spin_lock_irqsave(&bus->lock, flags);
+
+	list_for_each_entry(pdev, &bus->attached_devices, head) {
+		if (pdev->device_id == devid)
+			break;
+	}
+
+	vmm_spin_unlock_irqrestore(&bus->lock, flags);
+
+	return pdev;
+}
+
+struct pci_dev_emulator *pci_emu_find_device(const char *name)
+{
+	struct pci_dev_emulator *emu;
+
+	if (!name)
+		return NULL;
+
+	emu = NULL;
+
+	vmm_mutex_lock(&pci_emu_dectrl.emu_lock);
+
+	list_for_each_entry(emu, &pci_emu_dectrl.emu_list, head) {
+		if (strcmp(emu->name, name) == 0) {
+			vmm_mutex_unlock(&pci_emu_dectrl.emu_lock);
+			return emu;
+		}
+	}
+
+	vmm_mutex_unlock(&pci_emu_dectrl.emu_lock);
+
+	return NULL;
+}
+
 
 static int pci_emu_attach_pci_device(struct pci_host_controller *controller,
 					 struct pci_device *dev, u32 bus_id)
@@ -150,55 +226,6 @@ int pci_emu_unregister_device(struct pci_dev_emulator *emu)
 	return VMM_OK;
 }
 
-int pci_emu_find_pci_device(struct pci_host_controller *controller,
-			    int bus_id, int dev_id, struct pci_device **pdev)
-{
-	struct pci_bus *bus = pci_find_bus_by_id(controller, bus_id);
-	struct pci_device *ldev;
-	irq_flags_t flags;
-
-	if (!bus)
-		return VMM_ENODEV;
-
-	vmm_spin_lock_irqsave(&bus->lock, flags);
-
-	list_for_each_entry(ldev, &bus->attached_devices, head) {
-		if (ldev->device_id == dev_id) {
-			vmm_spin_unlock_irqrestore(&bus->lock, flags);
-			*pdev = ldev;
-			return VMM_OK;
-		}
-	}
-
-	vmm_spin_unlock_irqrestore(&bus->lock, flags);
-
-	return VMM_ENODEV;
-}
-
-struct pci_dev_emulator *pci_emu_find_device(const char *name)
-{
-	struct pci_dev_emulator *emu;
-
-	if (!name) {
-		return NULL;
-	}
-
-	emu = NULL;
-
-	vmm_mutex_lock(&pci_emu_dectrl.emu_lock);
-
-	list_for_each_entry(emu, &pci_emu_dectrl.emu_list, head) {
-		if (strcmp(emu->name, name) == 0) {
-			vmm_mutex_unlock(&pci_emu_dectrl.emu_lock);
-			return emu;
-		}
-	}
-
-	vmm_mutex_unlock(&pci_emu_dectrl.emu_lock);
-
-	return NULL;
-}
-
 static int pci_emu_register_bar(struct vmm_guest *guest,
 				const char *name,
 				struct pci_class *class,
@@ -242,6 +269,7 @@ static int pci_emu_enumerate_bars(struct vmm_guest *guest,
 		if (rc) {
 			vmm_printf("%s: Bar number not specified for %s\n",
 				   __func__, bars->name);
+			vmm_devtree_dref_node(bars);
 			goto done;
 		}
 
@@ -249,14 +277,17 @@ static int pci_emu_enumerate_bars(struct vmm_guest *guest,
 			vmm_printf("%s: Bar number for %s is out of range: %d\n",
 				   __func__, bars->name, barnum);
 			rc = VMM_EINVALID;
+			vmm_devtree_dref_node(bars);
 			goto done;
 		}
 
 		vmm_sprintf(reg_name, "%s@%s", bars->name, bus_node->name);
 		/* FIXME: Unmap previously register bars, or let it go??? */
-		if ((rc = pci_emu_register_bar(guest, reg_name, class, barnum, bars)) != VMM_OK) {
+		if ((rc = pci_emu_register_bar(guest, reg_name,
+					class, barnum, bars)) != VMM_OK) {
 			vmm_printf("%s: Failed to register bar region %s\n",
 				   __func__, reg_name);
+			vmm_devtree_dref_node(bars);
 			goto done;
 		}
 	}
@@ -311,6 +342,7 @@ int pci_emu_probe_devices(struct vmm_guest *guest,
 				pdev = vmm_zalloc(sizeof(struct pci_device));
 				if (!pdev) {
 					/* FIXME: more cleanup to do */
+					vmm_devtree_dref_node(tnode);
 					vmm_devtree_dref_node(dev_node);
 					vmm_devtree_dref_node(devs_node);
 					vmm_mutex_unlock(&pci_emu_dectrl.emu_lock);
@@ -325,6 +357,7 @@ int pci_emu_probe_devices(struct vmm_guest *guest,
 					vmm_printf("%s: error getting device ID information.\n",
 						   __func__);
 					vmm_free(pdev);
+					vmm_devtree_dref_node(tnode);
 					vmm_devtree_dref_node(dev_node);
 					vmm_devtree_dref_node(devs_node);
 					vmm_mutex_unlock(&pci_emu_dectrl.emu_lock);
@@ -336,6 +369,7 @@ int pci_emu_probe_devices(struct vmm_guest *guest,
 					vmm_printf("%s: %s/%s probe error %d\n",
 						   __func__, guest->name, pdev->node->name, rc);
 					vmm_free(pdev);
+					vmm_devtree_dref_node(tnode);
 					vmm_devtree_dref_node(dev_node);
 					vmm_devtree_dref_node(devs_node);
 					vmm_mutex_unlock(&pci_emu_dectrl.emu_lock);
@@ -346,6 +380,7 @@ int pci_emu_probe_devices(struct vmm_guest *guest,
 					vmm_printf("%s: %s/%s reset error %d\n",
 						   __func__, guest->name, pdev->node->name, rc);
 					vmm_free(pdev);
+					vmm_devtree_dref_node(tnode);
 					vmm_devtree_dref_node(dev_node);
 					vmm_devtree_dref_node(devs_node);
 					vmm_mutex_unlock(&pci_emu_dectrl.emu_lock);
@@ -358,6 +393,7 @@ int pci_emu_probe_devices(struct vmm_guest *guest,
 					vmm_printf("%s: %s/%s couldn't attach PCI device to bus.\n",
 						   __func__, guest->name, pdev->node->name);
 					vmm_free(pdev);
+					vmm_devtree_dref_node(tnode);
 					vmm_devtree_dref_node(dev_node);
 					vmm_devtree_dref_node(devs_node);
 					vmm_mutex_unlock(&pci_emu_dectrl.emu_lock);
@@ -369,6 +405,7 @@ int pci_emu_probe_devices(struct vmm_guest *guest,
 				vmm_devtree_dref_node(dev_node);
 				if (rc != VMM_OK) {
 					vmm_free(pdev);
+					vmm_devtree_dref_node(tnode);
 					vmm_devtree_dref_node(devs_node);
 					vmm_mutex_unlock(&pci_emu_dectrl.emu_lock);
 					return rc;

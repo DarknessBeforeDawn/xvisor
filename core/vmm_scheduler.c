@@ -134,44 +134,52 @@ static u32 rq_length(struct vmm_scheduler_ctrl *schedp, u32 priority)
 	return ret;
 }
 
-static void vmm_scheduler_next(struct vmm_scheduler_ctrl *schedp,
-			       struct vmm_timer_event *ev,
-			       arch_regs_t *regs)
+/* Should not be called from anywhere else */
+static struct vmm_vcpu *__vmm_scheduler_next1(struct vmm_scheduler_ctrl *schedp,
+					      arch_regs_t *regs)
 {
 	int rc;
-	irq_flags_t cf, nf = 0;
-	u32 current_state;
-	u64 next_time_slice = VMM_VCPU_DEF_TIME_SLICE;
+	irq_flags_t nf;
 	u64 tstamp = vmm_timer_timestamp();
+	u64 next_time_slice = VMM_VCPU_DEF_TIME_SLICE;
 	struct vmm_vcpu *next = NULL;
-	struct vmm_vcpu *tcurrent = NULL, *current = schedp->current_vcpu;
 
-	/* First time scheduling */
-	if (!current) {
-		rc = rq_dequeue(schedp, &next, &next_time_slice);
-		if (rc) {
-			/* This should never happen !!! */
-			vmm_panic("%s: dequeue error %d\n", __func__, rc);
-		}
-
-		vmm_write_lock_irqsave_lite(&next->sched_lock, nf);
-
-		arch_vcpu_switch(NULL, next, regs);
-		next->state_ready_nsecs += tstamp - next->state_tstamp;
-		arch_atomic_write(&next->state, VMM_VCPU_STATE_RUNNING);
-		next->state_tstamp = tstamp;
-		schedp->current_vcpu = next;
-		schedp->current_vcpu_irq_ns = schedp->irq_process_ns;
-		vmm_timer_event_start(ev, next_time_slice);
-
-		vmm_write_unlock_irqrestore_lite(&next->sched_lock, nf);
-
-		return;
+	rc = rq_dequeue(schedp, &next, &next_time_slice);
+	if (rc) {
+		/* This should never happen !!! */
+		vmm_panic("%s: dequeue error %d\n", __func__, rc);
 	}
 
-	/* Normal scheduling */
-	vmm_write_lock_irqsave_lite(&current->sched_lock, cf);
+	vmm_write_lock_irqsave_lite(&next->sched_lock, nf);
 
+	arch_vcpu_switch(NULL, next, regs);
+	next->state_ready_nsecs += tstamp - next->state_tstamp;
+	arch_atomic_write(&next->state, VMM_VCPU_STATE_RUNNING);
+	next->resumed = FALSE;
+	next->state_tstamp = tstamp;
+	schedp->current_vcpu = next;
+	schedp->current_vcpu_irq_ns = schedp->irq_process_ns;
+	vmm_timer_event_start(&schedp->ev, next_time_slice);
+
+	vmm_write_unlock_irqrestore_lite(&next->sched_lock, nf);
+
+	return next;
+}
+
+/* Must be called with write lock held on current->sched_lock */
+static struct vmm_vcpu *__vmm_scheduler_next2(struct vmm_scheduler_ctrl *schedp,
+					      struct vmm_vcpu *current,
+					      arch_regs_t *regs)
+{
+	int rc;
+	irq_flags_t nf = 0;
+	u32 current_state;
+	u64 tstamp = vmm_timer_timestamp();
+	u64 next_time_slice = VMM_VCPU_DEF_TIME_SLICE;
+	struct vmm_vcpu *next = NULL;
+	struct vmm_vcpu *tcurrent = NULL;
+
+	/* Normal scheduling */
 	current_state = arch_atomic_read(&current->state);
 
 	if (current_state & VMM_VCPU_STATE_SAVEABLE) {
@@ -201,36 +209,61 @@ static void vmm_scheduler_next(struct vmm_scheduler_ctrl *schedp,
 
 	next->state_ready_nsecs += tstamp - next->state_tstamp;
 	arch_atomic_write(&next->state, VMM_VCPU_STATE_RUNNING);
+	next->resumed = FALSE;
 	next->state_tstamp = tstamp;
 	schedp->current_vcpu = next;
 	schedp->current_vcpu_irq_ns = schedp->irq_process_ns;
-	vmm_timer_event_start(ev, next_time_slice);
+	vmm_timer_event_start(&schedp->ev, next_time_slice);
 
 	if (next != current) {
 		vmm_write_unlock_irqrestore_lite(&next->sched_lock, nf);
 	}
 
-	vmm_write_unlock_irqrestore_lite(&current->sched_lock, cf);
+	return (next != current) ? next : NULL;
 }
 
-static void vmm_scheduler_switch(struct vmm_scheduler_ctrl *schedp,
-				 arch_regs_t *regs)
+/* Must be called with write lock held on current->sched_lock */
+static struct vmm_vcpu *__vmm_scheduler_switch(struct vmm_scheduler_ctrl *schedp,
+						struct vmm_vcpu *current,
+						arch_regs_t *regs)
 {
-	struct vmm_vcpu *vcpu = schedp->current_vcpu;
+	struct vmm_vcpu *next = NULL;
 
 	if (!regs) {
 		/* This should never happen !!! */
 		vmm_panic("%s: null pointer to regs.\n", __func__);
 	}
 
-	if (vcpu) {
-		if (!vcpu->preempt_count) {
-			vmm_scheduler_next(schedp, &schedp->ev, regs);
+	if (current) {
+		if (!current->preempt_count) {
+			next = __vmm_scheduler_next2(schedp, current, regs);
 		} else {
 			vmm_timer_event_restart(&schedp->ev);
 		}
 	} else {
-		vmm_scheduler_next(schedp, &schedp->ev, regs);
+		next = __vmm_scheduler_next1(schedp, regs);
+	}
+
+	return next;
+}
+
+static void vmm_scheduler_switch(struct vmm_scheduler_ctrl *schedp,
+				 arch_regs_t *regs)
+{
+	irq_flags_t cf;
+	struct vmm_vcpu *next = NULL;
+	struct vmm_vcpu *current = schedp->current_vcpu;
+
+	if (current) { /* Normal scheduling */
+		vmm_write_lock_irqsave_lite(&current->sched_lock, cf);
+		next = __vmm_scheduler_switch(schedp, current, regs);
+		vmm_write_unlock_irqrestore_lite(&current->sched_lock, cf);
+	} else { /* First time scheduling */
+		next = __vmm_scheduler_switch(schedp, NULL, regs);
+	}
+
+	if (next) {
+		arch_vcpu_post_switch(next, regs);
 	}
 }
 
@@ -510,6 +543,22 @@ int vmm_scheduler_get_hcpu(struct vmm_vcpu *vcpu, u32 *hcpu)
 	return VMM_OK;
 }
 
+bool vmm_scheduler_check_current_hcpu(struct vmm_vcpu *vcpu)
+{
+	bool ret;
+	irq_flags_t flags;
+
+	if (vcpu == NULL) {
+		return FALSE;
+	}
+
+	vmm_read_lock_irqsave_lite(&vcpu->sched_lock, flags);
+	ret = (vcpu->hcpu == vmm_smp_processor_id()) ? TRUE : FALSE;
+	vmm_read_unlock_irqrestore_lite(&vcpu->sched_lock, flags);
+
+	return ret;
+}
+
 static void scheduler_ipi_migrate_vcpu(void *arg0, void *arg1, void *arg2)
 {
 	irq_flags_t flags;
@@ -628,7 +677,7 @@ void vmm_scheduler_irq_exit(arch_regs_t *regs)
 	 */
 	if ((vmm_manager_vcpu_get_state(vcpu) != VMM_VCPU_STATE_RUNNING) ||
 	    schedp->yield_on_irq_exit) {
-		vmm_scheduler_next(schedp, &schedp->ev, schedp->irq_regs);
+		vmm_scheduler_switch(schedp, schedp->irq_regs);
 		schedp->yield_on_irq_exit = FALSE;
 	}
 

@@ -178,8 +178,8 @@ static int amba_kmi_driver_probe(struct vmm_device *dev,
 		goto unmap;
 	}
 
-	ret = vmm_devtree_irq_get(dev->node, &kmi->irq, 0);
-	if (ret) {
+	kmi->irq = irq_of_parse_and_map(dev->node, 0);
+	if (!kmi->irq) {
 		ret = -EFAIL;
 		goto unmap;
 	}
@@ -214,8 +214,8 @@ static int amba_kmi_driver_remove(struct vmm_device *dev)
 }
 
 static struct vmm_devtree_nodeid amba_kmi_devid_table[] = {
-	{.type = "serio",.compatible = "arm,pl050"},
-	{.type = "serio",.compatible = "ambakmi"},
+	{ .compatible = "arm,pl050" },
+	{ .compatible = "ambakmi" },
 	{ /* end of list */ },
 };
 
